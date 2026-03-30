@@ -133,7 +133,7 @@ st.title("📚 Book of Negroes Database Dashboard")
 
 # Sidebar Search
 st.sidebar.header("🔍 Search Records")
-search_term = st.sidebar.text_input("Search Name (e.g. Thomas Fraction)")
+search_term = st.sidebar.text_input("Search Name (e.g. Samuel Gullet)")
 search_field = st.sidebar.selectbox("Field", ['all', 'First_Name', 'Surname', 'Ship_Name', 'ID'], index=0)
 limit = st.sidebar.selectbox("Max Results", [50, 100, 500], index=0)
 
