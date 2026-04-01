@@ -5,7 +5,6 @@ from psycopg2 import sql
 import os
 from dotenv import load_dotenv
 import plotly.express as px
-import plotly.graph_objects as go
 
 # Load environment variables
 load_dotenv()
@@ -18,7 +17,6 @@ DB_USER = os.getenv('DB_USER')
 DB_PASSWORD = os.getenv('DB_PASSWORD')
 
 def get_db_connection():
-    """Establish database connection"""
     try:
         conn = psycopg2.connect(
             host=DB_HOST,
@@ -26,419 +24,163 @@ def get_db_connection():
             database=DB_NAME,
             user=DB_USER,
             password=DB_PASSWORD,
-            sslmode='require'  # For Azure Postgres
+            sslmode='require'
         )
         return conn
     except Exception as e:
         st.error(f"Failed to connect to database: {e}")
         return None
 
-def search_records(search_term, search_field, limit=100):
-    """Search records in the database"""
-    conn = get_db_connection()
-    if not conn:
-        return pd.DataFrame()
+# --- DATA FETCHING FUNCTIONS ---
 
+def search_records(search_term, search_field, limit=100):
+    conn = get_db_connection()
+    if not conn: return pd.DataFrame()
     try:
         with conn.cursor() as cur:
-            # Using the actual table name from schema
             table_name = 'black_loyalist_directory'
-
+            search_pattern = f'%{search_term}%'
+            
             if search_field == 'all':
+                # Logic to support "First + Last" name searching
                 query = sql.SQL("""
-                    SELECT * FROM {} WHERE
-                    "ID" ILIKE %s OR
-                    "Ref_Page" ILIKE %s OR
-                    "Book" ILIKE %s OR
-                    "Ship_Name" ILIKE %s OR
-                    "Commander" ILIKE %s OR
-                    "First_Name" ILIKE %s OR
-                    "Surname" ILIKE %s OR
-                    "Father_FirstName" ILIKE %s OR
-                    "Father_Surname" ILIKE %s OR
-                    "Mother_FirstName" ILIKE %s OR
-                    "Mother_Surname" ILIKE %s OR
-                    "Gender" ILIKE %s OR
-                    "Age" ILIKE %s OR
-                    "Race" ILIKE %s OR
-                    "Ethnicity" ILIKE %s OR
-                    "Description" ILIKE %s OR
-                    "Origination_Port" ILIKE %s OR
-                    "Origination_State" ILIKE %s OR
-                    "Departure_Port" ILIKE %s OR
-                    "Departure_Date" ILIKE %s OR
-                    "Arrival_Port_City" ILIKE %s OR
-                    "Primary_Source_1" ILIKE %s OR
-                    "Primary_Source_2" ILIKE %s OR
-                    "Notes" ILIKE %s
+                    SELECT * FROM {table} WHERE 
+                    ("First_Name" || ' ' || "Surname") ILIKE %s OR
+                    "ID" ILIKE %s OR "Ship_Name" ILIKE %s OR 
+                    "First_Name" ILIKE %s OR "Surname" ILIKE %s OR
+                    "Description" ILIKE %s OR "Notes" ILIKE %s
                     LIMIT %s
-                """).format(sql.Identifier(table_name))
-
-                search_pattern = f'%{search_term}%'
-                params = [search_pattern] * 23 + [limit]
+                """).format(table=sql.Identifier(table_name))
+                params = [search_pattern] * 7 + [limit]
             else:
-                # Map field names to actual column names
-                column_mapping = {
-                    'id': '"ID"',
-                    'ref_page': '"Ref_Page"',
-                    'book': '"Book"',
-                    'ship_name': '"Ship_Name"',
-                    'commander': '"Commander"',
-                    'first_name': '"First_Name"',
-                    'surname': '"Surname"',
-                    'father_firstname': '"Father_FirstName"',
-                    'father_surname': '"Father_Surname"',
-                    'mother_firstname': '"Mother_FirstName"',
-                    'mother_surname': '"Mother_Surname"',
-                    'gender': '"Gender"',
-                    'age': '"Age"',
-                    'race': '"Race"',
-                    'ethnicity': '"Ethnicity"',
-                    'description': '"Description"',
-                    'origination_port': '"Origination_Port"',
-                    'origination_state': '"Origination_State"',
-                    'departure_port': '"Departure_Port"',
-                    'departure_date': '"Departure_Date"',
-                    'arrival_port_city': '"Arrival_Port_City"',
-                    'primary_source_1': '"Primary_Source_1"',
-                    'primary_source_2': '"Primary_Source_2"',
-                    'notes': '"Notes"'
-                }
-
-                actual_column = column_mapping.get(search_field, search_field)
-                query = sql.SQL("SELECT * FROM {} WHERE {} ILIKE %s LIMIT %s").format(
-                    sql.Identifier(table_name),
-                    sql.SQL(actual_column)
+                query = sql.SQL("SELECT * FROM {table} WHERE {col} ILIKE %s LIMIT %s").format(
+                    table=sql.Identifier(table_name),
+                    col=sql.Identifier(search_field)
                 )
-                params = [f'%{search_term}%', limit]
+                params = [search_pattern, limit]
 
             cur.execute(query, params)
             columns = [desc[0] for desc in cur.description]
-            results = cur.fetchall()
-
-            return pd.DataFrame(results, columns=columns)
-
-    except Exception as e:
-        st.error(f"Error executing query: {e}")
-        return pd.DataFrame()
+            return pd.DataFrame(cur.fetchall(), columns=columns)
     finally:
         conn.close()
 
-def get_table_info():
-    """Get table structure and record count"""
+def get_distribution_data(column_name, limit=None):
     conn = get_db_connection()
-    if not conn:
-        return None, 0
-
+    if not conn: return pd.DataFrame()
     try:
         with conn.cursor() as cur:
-            table_name = 'black_loyalist_directory'
-
-            # Get column information
-            cur.execute(sql.SQL("""
-                SELECT column_name, data_type, is_nullable
-                FROM information_schema.columns
-                WHERE table_name = %s
-                ORDER BY ordinal_position
-            """), [table_name])
-            columns = cur.fetchall()
-
-            # Get record count
-            cur.execute(sql.SQL("SELECT COUNT(*) FROM {}").format(sql.Identifier(table_name)))
-            count = cur.fetchone()[0]
-
-            return columns, count
-
-    except Exception as e:
-        st.error(f"Error getting table info: {e}")
-        return None, 0
-    finally:
-        conn.close()
-
-def get_race_distribution():
-    """Get count of people by race"""
-    conn = get_db_connection()
-    if not conn:
-        return pd.DataFrame()
-
-    try:
-        with conn.cursor() as cur:
+            limit_clause = sql.SQL("LIMIT %s") if limit else sql.SQL("")
             query = sql.SQL("""
-                SELECT "Race", COUNT(*) as count
-                FROM black_loyalist_directory
-                WHERE "Race" IS NOT NULL AND "Race" != '-'
-                GROUP BY "Race"
-                ORDER BY count DESC
-            """)
-            cur.execute(query)
-            columns = [desc[0] for desc in cur.description]
-            results = cur.fetchall()
-            return pd.DataFrame(results, columns=columns)
-    except Exception as e:
-        st.error(f"Error fetching race distribution: {e}")
-        return pd.DataFrame()
+                SELECT {col} as label, COUNT(*) as count 
+                FROM black_loyalist_directory 
+                WHERE {col} IS NOT NULL AND {col} != '-'
+                GROUP BY {col} ORDER BY count DESC {limit}
+            """).format(col=sql.Identifier(column_name), limit=limit_clause)
+            cur.execute(query, [limit] if limit else [])
+            return pd.DataFrame(cur.fetchall(), columns=['Label', 'count'])
     finally:
         conn.close()
 
-def get_ethnicity_distribution():
-    """Get count of people by ethnicity"""
-    conn = get_db_connection()
-    if not conn:
-        return pd.DataFrame()
+# --- UI COMPONENTS ---
 
-    try:
-        with conn.cursor() as cur:
-            query = sql.SQL("""
-                SELECT "Ethnicity", COUNT(*) as count
-                FROM black_loyalist_directory
-                WHERE "Ethnicity" IS NOT NULL AND "Ethnicity" != '-'
-                GROUP BY "Ethnicity"
-                ORDER BY count DESC
-            """)
-            cur.execute(query)
-            columns = [desc[0] for desc in cur.description]
-            results = cur.fetchall()
-            return pd.DataFrame(results, columns=columns)
-    except Exception as e:
-        st.error(f"Error fetching ethnicity distribution: {e}")
-        return pd.DataFrame()
-    finally:
-        conn.close()
+def display_profile_card(row):
+    """The Profile layout mimicking the USCT document screenshot"""
+    full_name = f"{row.get('First_Name', '')} {row.get('Surname', '')}".strip()
+    st.markdown(f"## {full_name}")
+    
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        st.info("📜 **Source Record**")
+        st.write(f"**ID:** {row.get('ID')}")
+        st.write(f"**Book:** {row.get('Book')}")
+        st.write(f"**Ref Page:** {row.get('Ref_Page')}")
+        st.caption(f"Source 1: {row.get('Primary_Source_1')}")
 
-def get_description_distribution():
-    """Get count of people by description"""
-    conn = get_db_connection()
-    if not conn:
-        return pd.DataFrame()
+    with col2:
+        # Section: Military/Voyage
+        st.subheader("🚢 Voyage & Service")
+        c_v1, c_v2 = st.columns(2)
+        c_v1.write(f"**Ship:** {row.get('Ship_Name')}")
+        c_v1.write(f"**Commander:** {row.get('Commander')}")
+        c_v2.write(f"**Departure:** {row.get('Departure_Port')}")
+        c_v2.write(f"**Date:** {row.get('Departure_Date')}")
 
-    try:
-        with conn.cursor() as cur:
-            query = sql.SQL("""
-                SELECT "Description", COUNT(*) as count
-                FROM black_loyalist_directory
-                WHERE "Description" IS NOT NULL AND "Description" != '-'
-                GROUP BY "Description"
-                ORDER BY count DESC
-                LIMIT 20
-            """)
-            cur.execute(query)
-            columns = [desc[0] for desc in cur.description]
-            results = cur.fetchall()
-            return pd.DataFrame(results, columns=columns)
-    except Exception as e:
-        st.error(f"Error fetching description distribution: {e}")
-        return pd.DataFrame()
-    finally:
-        conn.close()
+        # Section: Residence/Origin
+        st.subheader("📍 Residence")
+        c_r1, c_r2 = st.columns(2)
+        c_r1.write(f"**Origin State:** {row.get('Origination_State')}")
+        c_r2.write(f"**Arrival Port:** {row.get('Arrival_Port_City')}")
 
-def get_gender_distribution():
-    """Get count of people by gender"""
-    conn = get_db_connection()
-    if not conn:
-        return pd.DataFrame()
+        # Section: Physical Characteristics
+        st.subheader("🧬 Physical Characteristics")
+        c_p1, c_p2, c_p3 = st.columns(3)
+        c_p1.write(f"**Age:** {row.get('Age')}")
+        c_p1.write(f"**Gender:** {row.get('Gender')}")
+        c_p2.write(f"**Race:** {row.get('Race')}")
+        c_p2.write(f"**Ethnicity:** {row.get('Ethnicity')}")
+        c_p3.write(f"**Description:** {row.get('Description')}")
 
-    try:
-        with conn.cursor() as cur:
-            query = sql.SQL("""
-                SELECT "Gender", COUNT(*) as count
-                FROM black_loyalist_directory
-                WHERE "Gender" IS NOT NULL AND "Gender" != '-'
-                GROUP BY "Gender"
-                ORDER BY count DESC
-            """)
-            cur.execute(query)
-            columns = [desc[0] for desc in cur.description]
-            results = cur.fetchall()
-            return pd.DataFrame(results, columns=columns)
-    except Exception as e:
-        st.error(f"Error fetching gender distribution: {e}")
-        return pd.DataFrame()
-    finally:
-        conn.close()
+    if row.get('Notes'):
+        with st.expander("📝 View Remarks / Notes", expanded=True):
+            st.write(row.get('Notes'))
 
-# Streamlit UI
+# --- MAIN APP ---
+
 st.set_page_config(page_title="Book of Negroes Database Dashboard", layout="wide")
-
 st.title("📚 Book of Negroes Database Dashboard")
-st.markdown("Search and explore records from the Book of Negroes database")
 
-# Sidebar for search
+# Sidebar Search
 st.sidebar.header("🔍 Search Records")
+search_term = st.sidebar.text_input("Search Name (e.g. Samuel Gullet)")
+search_field = st.sidebar.selectbox("Field", ['all', 'First_Name', 'Surname', 'Ship_Name', 'ID'], index=0)
+limit = st.sidebar.selectbox("Max Results", [50, 100, 500], index=0)
 
-search_term = st.sidebar.text_input("Search Term", placeholder="Enter search term...")
-
-search_fields = [
-    'all', 'id', 'ref_page', 'book', 'ship_name', 'commander', 'first_name', 'surname',
-    'father_firstname', 'father_surname', 'mother_firstname', 'mother_surname',
-    'gender', 'age', 'race', 'ethnicity', 'description', 'origination_port',
-    'origination_state', 'departure_port', 'departure_date', 'arrival_port_city',
-    'primary_source_1', 'primary_source_2', 'notes'
-]
-
-search_field = st.sidebar.selectbox("Search Field", search_fields, index=0)
-
-limit_options = [50, 100, 200, 500, 1000]
-limit = st.sidebar.selectbox("Max Results", limit_options, index=1)
-
-if st.sidebar.button("Search", type="primary"):
-    if search_term:
-        with st.spinner("Searching database..."):
-            results = search_records(search_term, search_field, limit)
-
-        if not results.empty:
-            st.success(f"Found {len(results)} records")
-
-            # Display results
+if search_term:
+    results = search_records(search_term, search_field, limit)
+    if not results.empty:
+        st.success(f"Found {len(results)} records")
+        
+        # Profile Selector
+        selected_idx = st.selectbox(
+            "Select a person to view details:", 
+            options=range(len(results)),
+            format_func=lambda x: f"{results.iloc[x]['First_Name']} {results.iloc[x]['Surname']} (ID: {results.iloc[x]['ID']})"
+        )
+        display_profile_card(results.iloc[selected_idx])
+        
+        with st.expander("📊 View Raw Data Table"):
             st.dataframe(results, use_container_width=True)
-
-            # Download button
-            csv = results.to_csv(index=False)
-            st.download_button(
-                label="📥 Download Results as CSV",
-                data=csv,
-                file_name="book_of_negroes_search_results.csv",
-                mime="text/csv"
-            )
-        else:
-            st.info("No records found matching your search criteria.")
     else:
-        st.warning("Please enter a search term.")
+        st.info("No matching records found.")
 
-# Database info section
-st.header("📊 Database Information")
-
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("Table Structure")
-    columns, count = get_table_info()
-    if columns:
-        col_df = pd.DataFrame(columns, columns=['Column Name', 'Data Type', 'Nullable'])
-        st.dataframe(col_df, use_container_width=True)
-    else:
-        st.error("Could not retrieve table structure.")
-
-with col2:
-    st.subheader("Statistics")
-    if count is not None:
-        st.metric("Total Records", f"{count:,}")
-    else:
-        st.error("Could not retrieve record count.")
-
-# Analytics section
+# --- ANALYTICS SECTION (Always Visible) ---
+st.divider()
 st.header("📈 Demographics & Composition Analysis")
-st.markdown("Visualizations showing the demographic distribution of people in the database")
 
-# Create tabs for different visualizations
-tab1, tab2, tab3, tab4 = st.tabs(["Race Distribution", "Ethnicity Distribution", "Gender Distribution", "Description Distribution"])
+tab1, tab2, tab3, tab4 = st.tabs(["Race", "Ethnicity", "Gender", "Top Descriptions"])
 
 with tab1:
-    st.subheader("Racial Composition")
-    race_data = get_race_distribution()
-    if not race_data.empty:
-        # Bar chart
-        fig_race = px.bar(
-            race_data,
-            x='Race',
-            y='count',
-            title='Distribution of People by Race',
-            labels={'count': 'Number of People', 'Race': 'Race'},
-            color='count',
-            color_continuous_scale='Viridis'
-        )
-        fig_race.update_layout(showlegend=False, height=500)
-        st.plotly_chart(fig_race, use_container_width=True)
-        
-        # Pie chart
-        fig_race_pie = px.pie(
-            race_data,
-            values='count',
-            names='Race',
-            title='Race Distribution (Percentage)'
-        )
-        fig_race_pie.update_layout(height=500)
-        st.plotly_chart(fig_race_pie, use_container_width=True)
-    else:
-        st.info("No race data available")
+    data = get_distribution_data("Race")
+    if not data.empty:
+        fig = px.bar(data, x='Label', y='count', title="Race Distribution", color='count', color_continuous_scale='Viridis')
+        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(px.pie(data, values='count', names='Label'), use_container_width=True)
 
 with tab2:
-    st.subheader("Ethnic Composition")
-    ethnicity_data = get_ethnicity_distribution()
-    if not ethnicity_data.empty:
-        # Bar chart
-        fig_eth = px.bar(
-            ethnicity_data,
-            x='Ethnicity',
-            y='count',
-            title='Distribution of People by Ethnicity',
-            labels={'count': 'Number of People', 'Ethnicity': 'Ethnicity'},
-            color='count',
-            color_continuous_scale='Blues'
-        )
-        fig_eth.update_layout(showlegend=False, height=500)
-        st.plotly_chart(fig_eth, use_container_width=True)
-        
-        # Pie chart
-        fig_eth_pie = px.pie(
-            ethnicity_data,
-            values='count',
-            names='Ethnicity',
-            title='Ethnicity Distribution (Percentage)'
-        )
-        fig_eth_pie.update_layout(height=500)
-        st.plotly_chart(fig_eth_pie, use_container_width=True)
-    else:
-        st.info("No ethnicity data available")
+    data = get_distribution_data("Ethnicity")
+    if not data.empty:
+        fig = px.bar(data, x='Label', y='count', title="Ethnicity Distribution", color='count', color_continuous_scale='Blues')
+        st.plotly_chart(fig, use_container_width=True)
 
 with tab3:
-    st.subheader("Gender Composition")
-    gender_data = get_gender_distribution()
-    if not gender_data.empty:
-        # Bar chart
-        fig_gender = px.bar(
-            gender_data,
-            x='Gender',
-            y='count',
-            title='Distribution of People by Gender',
-            labels={'count': 'Number of People', 'Gender': 'Gender'},
-            color='Gender',
-            color_discrete_sequence=['#FF6B9D', '#4A90E2', '#F5A623', '#7ED321']
-        )
-        fig_gender.update_layout(showlegend=False, height=500)
-        st.plotly_chart(fig_gender, use_container_width=True)
-        
-        # Pie chart
-        fig_gender_pie = px.pie(
-            gender_data,
-            values='count',
-            names='Gender',
-            title='Gender Distribution (Percentage)'
-        )
-        fig_gender_pie.update_layout(height=500)
-        st.plotly_chart(fig_gender_pie, use_container_width=True)
-    else:
-        st.info("No gender data available")
+    data = get_distribution_data("Gender")
+    if not data.empty:
+        st.plotly_chart(px.pie(data, values='count', names='Label', title="Gender Distribution"), use_container_width=True)
 
 with tab4:
-    st.subheader("Description Categories")
-    description_data = get_description_distribution()
-    if not description_data.empty:
-        # Horizontal bar chart for better readability
-        fig_desc = px.bar(
-            description_data,
-            y='Description',
-            x='count',
-            orientation='h',
-            title='Top 20 Description Categories',
-            labels={'count': 'Number of People', 'Description': 'Description'},
-            color='count',
-            color_continuous_scale='Reds'
-        )
-        fig_desc.update_layout(showlegend=False, height=600)
-        st.plotly_chart(fig_desc, use_container_width=True)
-    else:
-        st.info("No description data available")
-
-# Footer
-st.markdown("---")
-# st.markdown("*Dashboard for exploring Book of Negroes records stored in Azure PostgreSQL*")
+    data = get_distribution_data("Description", limit=20)
+    if not data.empty:
+        fig = px.bar(data, y='Label', x='count', orientation='h', title="Top 20 Descriptions", color='count', color_continuous_scale='Reds')
+        st.plotly_chart(fig, use_container_width=True)
